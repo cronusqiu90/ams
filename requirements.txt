@@ -1,6 +1,6 @@
+importlib-metadata==3.6.0
 APScheduler==3.10.4
 celery[amqp]==5.2.7
 loguru==0.7.3
 msgpack==1.0.5
 psutil==7.0.0
-pytz==2025.1
