@@ -35,7 +35,6 @@ logger.add(
     backtrace=True,
 )
 
-hostname = socket.gethostname()
 event = Event()
 
 
@@ -161,15 +160,20 @@ celery_app.conf.update(
     **{
         "broker_connection_retry_on_startup": True,
         "broker_connection_max_retries": 99,
+        "worker_send_task_events": True,
+        "worker_enable_remote_control": True,
         "task_reject_on_worker_lost": True,
         "task_protocol": 1,
         "task_default_queue": "crawlab.report",
         "task_default_exchange": "crawlab",
+
+
     }
 )
 
 
 def collect_metric():
+    hostname = socket.gethostname()
     cpu_percent = psutil.cpu_percent(interval=1)
     cpu_count = psutil.cpu_count()
     vr_mem = psutil.virtual_memory()
@@ -243,7 +247,7 @@ def _find_matched_files(dir_paths: list, date=None):
     return sorted(files)
 
 
-def _collect_tc_statistic(db, date):
+def _collect_tc_statistic(db, date, hostname):
     files = _find_matched_files(conf["tc"]["paths"], date)
     if not files:
         return
@@ -259,9 +263,11 @@ def _collect_tc_statistic(db, date):
     for file in files:
         logger.info(f"parsing {file}")
         params = _extract_param_from_path(file)
+        params['hostname'] = hostname
+
         for line in open(file, "r"):
             if event.is_set():
-                raise SystemExit
+                return
 
             try:
                 values = _re_extract_values(line, pattern)
@@ -269,7 +275,6 @@ def _collect_tc_statistic(db, date):
                 seq_id = values.get("seq_id", None)
                 if not batch_id or not seq_id:
                     continue
-
                 values.update(**params)
                 if db.upsert_tc_log(TCLog.create(**values)) is False:
                     logger.error(f"failed to upsert log={line}")
@@ -279,27 +284,46 @@ def _collect_tc_statistic(db, date):
 
 
 def collect_statistic(date=None):
+    hostname = socket.gethostname()
     yesterday = date or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     path = os.path.join(os.getcwd(), f"{yesterday}.dat")
 
     with DB(path) as db:
-        _collect_tc_statistic(db, yesterday)
+        _collect_tc_statistic(db, yesterday, hostname)
 
     with open(path, "rb") as fd:
         body = fd.read()
     raw = binascii.b2a_base64(msgpack.packb(body)).decode()  # type: ignore
+
+    if yesterday == "*":
+        yesterday = "all"
+        
     r = celery_app.send_task(
-        name="crawlab.report.statistic", args=[date, hostname, raw]
+        name="crawlab.report.statistic", args=[yesterday, hostname, raw]
     )  # type: ignore
     for _ in range(300):
         time.sleep(1)
+        if event.is_set():
+            return
+        
         if r.state == "SUCCESS":
+            logger.info("report statistic succeeded")
             os.remove(path)
             return
     logger.error(f"failed to report statistic: timeout")
 
 
-def run():
+@click.group(name="ams")
+def cli():
+    pass
+
+@cli.command(name="once", help="run as once task")
+@click.option("--date", default="*")
+def run_once(date):
+    collect_statistic(date)
+
+@cli.command(name="service", help="run as service")
+def run_service():
     scheduler = BackgroundScheduler(
         **{
             "executors": {
@@ -333,5 +357,7 @@ def run():
     finally:
         scheduler.shutdown()
 
+
+
 if __name__ == "__main__":
-    run()
+    cli()
