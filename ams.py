@@ -338,8 +338,8 @@ def run_service():
         }
     )
 
-    j1 = scheduler.add_job(collect_metric, trigger=IntervalTrigger(seconds=55))
-    logger.info(str(j1))
+    # j1 = scheduler.add_job(collect_metric, trigger=IntervalTrigger(seconds=55))
+    # logger.info(str(j1))
 
     j2 = scheduler.add_job(
         collect_statistic,
